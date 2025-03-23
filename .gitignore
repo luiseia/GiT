@@ -130,7 +130,7 @@ mmdet.egg-info/
 
 debug/
 # configs/
-# tools/
+tools/
 others_file/
 slurm_output/*
 work_dir/*
