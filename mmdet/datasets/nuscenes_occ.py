@@ -69,16 +69,8 @@ class NuScenesOccDataset(BaseDataset):
         # 如果 metainfo 中没有提供类别信息，可设置默认的 nuScenes 类别
         if metainfo is None or 'CLASSES' not in metainfo:
             self.CLASSES = [
-                "car",
-                "truck",
-                "construction_vehicle",
-                "bus",
-                "trailer",
-                "barrier",
-                "motorcycle",
-                "bicycle",
-                "pedestrian",
-                "traffic_cone",
+                'car', 'bus', 'construction_vehicle',
+                           'bicycle', 'motorcycle', 'truck', 'trailer'
             ]
         else:
             self.CLASSES = metainfo['CLASSES']
@@ -164,6 +156,8 @@ class NuScenesOccDataset(BaseDataset):
         input_dict['occ_future_ann_infos'] = self.get_future_detection_infos(future_frames)
 
         # print(f"[DEBUG] get_data_info: Constructed input_dict keys: {list(input_dict.keys())}")
+        input_dict['classes'] = self.CLASSES
+        # 长宽用num_bins代表了所以只需要加角度？
         return input_dict
 
 

@@ -4395,8 +4395,12 @@ class AddMetaInfo(BaseTransform):
         elif task_name == 'grounding':
             num_bins = self.meta_dict.get('head_cfg', {}).get('num_bins', 0)
             use_vocab_list = [str(i) for i in range(num_bins + 1)]
-        elif task_name in ['caption', 'occupancy_prediction']:
+        elif task_name == 'caption':
             use_vocab_list = []
+        elif task_name == 'occupancy_prediction':
+            # print('self.meta_dict', self.meta_dict['head_cfg'])
+            num_bins = self.meta_dict['head_cfg']['num_bins']
+            use_vocab_list = [str(i) for i in range(num_bins + 4)]
         else:
             raise NotImplementedError(f"Task '{task_name}' is not implemented in AddMetaInfo")
 

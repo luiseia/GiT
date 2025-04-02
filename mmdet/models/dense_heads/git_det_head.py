@@ -323,8 +323,10 @@ class GiTDetHead(BaseModule):
 
         return (loss_cls, loss_reg)
     
-    def decoder_inference(self, layers_module, patch_embed: Tensor, patch_mask: Tensor, text_embed: Tensor, text_mask: Tensor, 
-            grid_pos_embed: Tensor, grid_mask: Tensor, references: Tensor, bert_embed_func: Callable, task_embedding: Tensor, 
+    def decoder_inference(self, layers_module, patch_embed: Tensor, patch_mask: Tensor,
+                           text_embed: Tensor, text_mask: Tensor, 
+            grid_pos_embed: Tensor, grid_mask: Tensor, references: Tensor, 
+            bert_embed_func: Callable, task_embedding: Tensor, 
             vocabulary_embed: Tensor, grid_interpolate: bool=True, global_only_image: bool=True) -> Dict:
         """AutoRegressive decoding target tokens.
         

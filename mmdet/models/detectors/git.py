@@ -181,7 +181,7 @@ class GiT(BaseDetector, metaclass=ABCMeta):
                 sample.pred_caption = results
         elif self.mode == 'occupancy_prediction' :
             for sample, results in zip(batch_data_samples, results_list):
-                sample.pred_occ = results
+                sample.pred_2d_box_occ = results
         elif self.mode == 'grounding':
             for sample, results in zip(batch_data_samples,results_list):
                 gt_bboxes = torch.Tensor(sample.get('gt_bboxes'))
@@ -355,7 +355,7 @@ class GiT(BaseDetector, metaclass=ABCMeta):
         loss_out_indices = [len(self.backbone.layers) - 1]
 
         
-        if self.mode not in ['caption', 'occupancy_prediction'] :
+        if self.mode not in ['caption'] :
             tasks_tokens_embedding = self.concept_generation(self.use_vocab_list)
             num_classes = batch_data_samples[0].head_cfg['num_classes']
             if self.mode == 'semantic_segmentation':
@@ -384,7 +384,7 @@ class GiT(BaseDetector, metaclass=ABCMeta):
             num_total_pos_list = []
             num_total_neg_list = []
 
-            batch_gt_instances, batch_img_metas = [], []
+            bev_bbox_gt_list, batch_gt_instances, batch_img_metas = [],[], []
             for data_sample in batch_data_samples:
                 batch_img_metas.append(data_sample.metainfo)
                 if self.mode in ['detection', 'instance_segmentation']:
@@ -393,8 +393,9 @@ class GiT(BaseDetector, metaclass=ABCMeta):
                     batch_gt_instances.append(data_sample.gt_sem_seg)
                     batch_img_metas[-1]['grid_resolution'] = grid_int_position.shape[:2]
                 elif self.mode in [ 'occupancy_prediction']:
-                    batch_gt_instances.append(data_sample.gt_occ_seg)
-                elif self.mode in ['caption', 'occupancy_prediction' ]:
+                    bev_bbox_gt_list.append(data_sample.bev_bbox_gt)
+                    batch_gt_instances.append(data_sample.gt_instances)
+                elif self.mode in ['caption' ]:
                     batch_gt_instances.append(data_sample.gt_caption)
                 elif self.mode == 'grounding':
                     batch_gt_instances.append(data_sample.gt_bboxes)
@@ -404,11 +405,14 @@ class GiT(BaseDetector, metaclass=ABCMeta):
             batch_size = len(batch_gt_instances)
             grid_token = grid_start_embed
             reference_preds = [r for r in grid_reference]
-            if self.mode in ['caption', 'occupancy_prediction' ]:
+            if self.mode in ['caption']:
                 (input_tokens, target_tokens, token_weights, 
                 num_total_pos, num_total_neg) = self.task_specific_heads[self.mode+'_head'].get_targets_based_on_reference(
-                            reference_preds, batch_gt_instances, batch_img_metas, self.tokenizer)
-                
+                          reference_preds, batch_gt_instances, batch_img_metas, self.tokenizer)
+            elif self.mode in ['occupancy_prediction' ]:
+                (input_tokens, target_tokens, token_weights, 
+                num_total_pos, num_total_neg) = self.task_specific_heads[self.mode+'_head'].get_targets_based_on_reference(
+                            bev_bbox_gt_list, batch_gt_instances, batch_img_metas)  
             else:
                 (input_tokens, target_tokens, token_weights, 
                 num_total_pos, num_total_neg) = self.task_specific_heads[self.mode+'_head'].get_targets_based_on_reference(
@@ -419,10 +423,12 @@ class GiT(BaseDetector, metaclass=ABCMeta):
             window_shape = (grid_H // self.multi_tasks_cfgs['grid_resolution_perwin'][0],
                             grid_W // self.multi_tasks_cfgs['grid_resolution_perwin'][1])
             batch_select_index = self.window_grid_sample(input_tokens, grid_int_position, window_shape)
-
-            select_input_tokens = torch.gather(input_tokens, 1, batch_select_index[:, :, None].repeat(1, 1, input_tokens.shape[-1]))
-            target_tokens = target_tokens.to(patch_embed.device)
-
+            # move device
+            input_tokens = input_tokens.to(batch_select_index.device)
+            target_tokens = target_tokens.to(batch_select_index.device)
+            token_weights = token_weights.to(batch_select_index.device)
+             # sample by index
+            select_input_tokens = torch.gather(input_tokens, 1, batch_select_index[:, :, None].repeat(1, 1, input_tokens.shape[-1]))          
             select_target_tokens = torch.gather(target_tokens, 1, batch_select_index[:, :, None].repeat(1, 1, target_tokens.shape[-1]))
             select_token_weights = torch.gather(token_weights, 1, batch_select_index[:, :, None].repeat(1, 1, token_weights.shape[-1]))
             select_grid_token = torch.gather(grid_token, 1, batch_select_index[:, :, None].repeat(1, 1, grid_token.shape[-1]))
@@ -434,7 +440,11 @@ class GiT(BaseDetector, metaclass=ABCMeta):
 
             input_seq = select_input_tokens.view(-1, select_input_tokens.shape[-1]).clone()
             task_id = torch.zeros_like(input_seq[:, 0]).fill_(self.mode_id).long()
+                # print("input_seq:", input_seq)
+            # if input_seq.min().item()!=400:
+            #     print("input_seq range: min =", input_seq.min().item(), ", max =", input_seq.max().item())
             seq_embed = tasks_tokens_embedding[input_seq]
+
             if self.mode == 'caption':
                 seq_embed[:, :1, :] = self.task_embedding.unsqueeze(1)[task_id, :, :]
             else:
@@ -451,7 +461,7 @@ class GiT(BaseDetector, metaclass=ABCMeta):
                 seq_embed = torch.cat([grid_feature, seq_embed], dim=2)
                 attn_mask = self.get_attn_mask(layer.window_size, patch_embed, text_embed, seq_embed)
 
-                disable_window = self.mode == 'caption' or self.mode == 'grounding'
+                disable_window = self.mode == 'caption' or self.mode == 'grounding' or self.mode == 'occupancy_prediction'
                 if self.use_checkpoints:
                     if self.global_only_image and layer.window_size <= 0:
                         patch_embed, text_embed = checkpoint.checkpoint(layer.img_forward, patch_embed, text_embed,
@@ -486,13 +496,13 @@ class GiT(BaseDetector, metaclass=ABCMeta):
             }
             return output_dict
         else:
-            if self.mode in ['detection', 'instance_segmentation', 'semantic_segmentation', 'grounding']:
+            if self.mode in ['detection', 'instance_segmentation', 'semantic_segmentation', 'grounding', 'occupancy_prediction']:
                 output_dict = self.task_specific_heads[self.mode+'_head'].decoder_inference(
                     self.backbone.layers, patch_embed, patch_mask, text_embed, text_mask,
                     grid_start_embed, grid_mask, grid_reference, self.embed,
                     self.task_embedding[self.mode_id], tasks_tokens_embedding,
                     self.grid_interpolate, self.global_only_image)
-            elif self.mode in ['caption', 'occupancy_prediction']:
+            elif self.mode in ['caption']:
                 output_dict = self.task_specific_heads[self.mode+'_head'].decoder_inference(
                     self.backbone.layers, patch_embed, patch_mask, None, None,
                     grid_start_embed, None, grid_reference, self.embed,
@@ -568,6 +578,7 @@ class GiT(BaseDetector, metaclass=ABCMeta):
     def window_grid_sample(self, input_tokens, grid_int_position, window_shape):
         # generate window id for each grid
         batch_size = input_tokens.shape[0]
+        a = grid_int_position[:, :, 0]
         win_coord_H = torch.div(grid_int_position[:, :, 0], self.grid_resolution_perwin[0],
             rounding_mode='trunc')
         win_coord_W = torch.div(grid_int_position[:, :, 1], self.grid_resolution_perwin[1],

@@ -161,7 +161,7 @@ test_evaluator = val_evaluator
 # learning policy
 max_iters=120000
 train_cfg = dict(
-    type='IterBasedTrainLoop', max_iters=max_iters, val_interval=5000)
+    type='IterBasedTrainLoop', max_iters=max_iters, val_interval=50)
 test_cfg = dict(type='TestLoop')
 val_cfg = dict(type='ValLoop')
 

@@ -50,7 +50,8 @@ class GenerateOccFlowLabels(BaseTransform):
         # 类别过滤（这里仅举例车辆类别，你可以根据需要修改）
         nusc_classes = ['car', 'truck', 'construction_vehicle', 'bus', 'trailer',
                         'barrier', 'motorcycle', 'bicycle', 'pedestrian', 'traffic_cone']
-        vehicle_classes = ['car', 'bus', 'construction_vehicle', 'truck', 'trailer']
+        vehicle_classes = ['car', 'bus', 'construction_vehicle',
+                           'bicycle', 'motorcycle', 'truck', 'trailer']
         if only_vehicle:
             self.filter_cls_ids = np.array([nusc_classes.index(cls) for cls in vehicle_classes])
         else:
@@ -118,59 +119,6 @@ class GenerateOccFlowLabels(BaseTransform):
 
         return boxes
 
-    def visualize_segmentation(self, segmentation: np.ndarray, save_path: str = 'segmentation.png') -> None:
-            """
-            使用 matplotlib 显示并保存分割图像。
-            
-            Args:
-                segmentation (np.ndarray): 2D 分割图，像素值为整数（例如 0/1 或其他类别索引）。
-                save_path (str): 保存图像的文件路径，默认 'segmentation.png'。
-            """
-            plt.figure(figsize=(8, 8))
-            # 如果 segmentation 中类别较少，可用 'jet'、'nipy_spectral' 或 'gray' 等 cmap，根据需要调整
-            plt.imshow(segmentation, cmap='gray')
-            plt.title("BEV Segmentation")
-            plt.axis('off')
-            plt.savefig(save_path, bbox_inches='tight', pad_inches=0)
-            plt.show()
-            plt.close()
-
-
-    def apply_front_camera_mask(self, occ_seg: torch.Tensor) -> torch.Tensor:
-        """
-        对 occ_seg（尺寸形如 (N, H, W)）应用梯形掩码，仅保留前摄像头对应的区域，
-        将梯形外的部分置为未占用（这里用 0 表示未占用）。
-        
-        Args:
-            occ_seg (torch.Tensor): occ 分割图，形状 (num_frames, H, W)
-            
-        Returns:
-            torch.Tensor: 掩码处理后的 occ 分割图，形状不变。
-        """
-        # 获取尺寸信息
-        N, H, W = occ_seg.shape
-        
-        # 设计梯形区域（换到上方）：
-        #   - 顶边覆盖整个宽度（[0, W-1]），对应车辆正前方近处；
-        #   - 底边较窄（例如位于宽度的 25% ~ 75% 区间），对应远处
-        pts = np.array([
-            [0, 0],                     # 顶左：图像上边缘左侧
-            [W - 1, 0],                 # 顶右：图像上边缘右侧
-            [int(W * 0.75), int(H * 0.5)],  # 底右：位于图像中部偏右
-            [int(W * 0.25), int(H * 0.5)]   # 底左：位于图像中部偏左
-        ], dtype=np.int32)
-        
-        # 在空白图像上填充梯形区域（值为1，其余区域为0）
-        mask = np.zeros((H, W), dtype=np.uint8)
-        cv2.fillPoly(mask, [pts], 1)
-        
-        # 将 numpy mask 转换为 tensor，并扩展到所有帧上
-        mask_tensor = torch.from_numpy(mask).to(occ_seg.device)
-        mask_tensor = mask_tensor.unsqueeze(0).expand(N, -1, -1)
-        
-        # 将 occ_seg 中 mask 外部置 0（未占用），mask 内保持原值
-        occ_seg_masked = occ_seg * mask_tensor
-        return occ_seg_masked
 
 
     def __call__(self, results: dict) -> dict:
@@ -180,7 +128,6 @@ class GenerateOccFlowLabels(BaseTransform):
         """
         # 用于将 ignore_index 转换为特殊标记
         SPECIAL_INDEX = -20
-        # print(results.keys())
         # 提取未来帧的检测信息
         all_gt_bboxes_3d = results.get('future_gt_bboxes_3d', None)
         all_gt_labels_3d = results.get('future_gt_labels_3d', None)
@@ -202,274 +149,222 @@ class GenerateOccFlowLabels(BaseTransform):
             'e2g_t': e2g_t_vecs[0],
         }
 
-        segmentations = []  # 存放每帧生成的 BEV 分割图
-        instances = []      # 存放每帧生成的实例图
-        gt_future_boxes = []   # 存放转换后每帧的检测框
-        gt_future_labels = []  # 存放每帧对应的类别信息
+        segmentations = []   # 存放每帧生成的 BEV 分割图
+        instances = []       # 存放每帧生成的实例图
+        gt_future_boxes = [] # 存放转换后每帧的检测框
+        gt_future_labels = []# 存放每帧对应的类别信息
 
-        for i in range(num_frames):
-            gt_bboxes_3d = all_gt_bboxes_3d[i]
-            gt_labels_3d = all_gt_labels_3d[i]
-            ins_inds = all_gt_inds[i]
-            vis_tokens = all_vis_tokens[i] if all_vis_tokens is not None else None
+        # 这里只处理一帧数据（假设 i=0）
+        i = 0
+        gt_bboxes_3d = all_gt_bboxes_3d[i]
+        gt_labels_3d = all_gt_labels_3d[i]
+        ins_inds = all_gt_inds[i]
+        vis_tokens = all_vis_tokens[i] if all_vis_tokens is not None else None
 
-            if gt_bboxes_3d is None:
-                segmentation = np.ones((self.bev_dimension[1], self.bev_dimension[0]), dtype=np.int64) * self.ignore_index
-                instance = np.ones((self.bev_dimension[1], self.bev_dimension[0]), dtype=np.int64) * self.ignore_index
-            else:
-                t_curr = {
-                    'l2e_r': l2e_r_mats[i],
-                    'l2e_t': l2e_t_vecs[i],
-                    'e2g_r': e2g_r_mats[i],
-                    'e2g_t': e2g_t_vecs[i],
-                }
-                ref_bboxes_3d = self.reframe_boxes(gt_bboxes_3d, t_ref, t_curr)
-                gt_future_boxes.append(ref_bboxes_3d)
-                gt_future_labels.append(gt_labels_3d)
+        t_curr = {
+            'l2e_r': l2e_r_mats[i],
+            'l2e_t': l2e_t_vecs[i],
+            'e2g_r': e2g_r_mats[i],
+            'e2g_t': e2g_t_vecs[i],
+        }
+        # 转换 3D 框到参考帧
+        ref_bboxes_3d = self.reframe_boxes(gt_bboxes_3d, t_ref, t_curr)
+        gt_future_boxes.append(ref_bboxes_3d)
+        gt_future_labels.append(gt_labels_3d)
 
-                segmentation = np.zeros((self.bev_dimension[1], self.bev_dimension[0]), dtype=np.int32)
-                instance = np.zeros((self.bev_dimension[1], self.bev_dimension[0]), dtype=np.int32)
+        # 初始化 BEV 分割图和实例图
+        segmentation = np.zeros((self.bev_dimension[1], self.bev_dimension[0]), dtype=np.int32)
+        instance = np.zeros((self.bev_dimension[1], self.bev_dimension[0]), dtype=np.int32)
 
-                if self.only_vehicle:
-                    vehicle_mask = np.isin(gt_labels_3d, self.filter_cls_ids)
-                    ref_bboxes_3d = ref_bboxes_3d[vehicle_mask]
-                    gt_labels_3d = gt_labels_3d[vehicle_mask]
-                    ins_inds = ins_inds[vehicle_mask]
-                    if vis_tokens is not None:
-                        vis_tokens = vis_tokens[vehicle_mask]
+        if self.only_vehicle:
+            vehicle_mask = np.isin(gt_labels_3d, self.filter_cls_ids)
+            ref_bboxes_3d = ref_bboxes_3d[vehicle_mask]
+            gt_labels_3d = gt_labels_3d[vehicle_mask]
+            ins_inds = ins_inds[vehicle_mask]
+            if vis_tokens is not None:
+                vis_tokens = vis_tokens[vehicle_mask]
 
-                if self.filter_invisible and vis_tokens is not None:
-                    visible_mask = (vis_tokens != 1)  # vis_tokens==1 表示不可见
-                    ref_bboxes_3d = ref_bboxes_3d[visible_mask]
-                    gt_labels_3d = gt_labels_3d[visible_mask]
-                    ins_inds = ins_inds[visible_mask]
+        if self.filter_invisible and vis_tokens is not None:
+            visible_mask = (vis_tokens != 1)  # vis_tokens==1 表示不可见
+            ref_bboxes_3d = ref_bboxes_3d[visible_mask]
+            gt_labels_3d = gt_labels_3d[visible_mask]
+            ins_inds = ins_inds[visible_mask]
 
-                if len(ref_bboxes_3d.tensor) > 0:
-                    # 计算检测框在 BEV 下的 2D 坐标
-                    bbox_corners = ref_bboxes_3d.corners[:, [0, 3, 7, 4], :2].numpy()
-                    bbox_corners = np.round(
-                        (bbox_corners - self.bev_start_position[:2] + self.bev_resolution[:2] / 2.0)
-                        / self.bev_resolution[:2]
-                    ).astype(np.int32)
-                    
-                    for j, gt_ind in enumerate(ins_inds):
-                        if gt_ind == self.ignore_index:
-                            gt_ind = SPECIAL_INDEX
-                        poly_region = bbox_corners[j]
-                        cv2.fillPoly(segmentation, [poly_region], 1)
-                        cv2.fillPoly(instance, [poly_region], int(gt_ind))
-                else:
-                    segmentation = np.zeros((self.bev_dimension[1], self.bev_dimension[0]), dtype=np.int32) * self.ignore_index
-                    instance = np.zeros((self.bev_dimension[1], self.bev_dimension[0]), dtype=np.int32) * self.ignore_index
+        # 将 3D 框转换为 BEV 下的 2D 框参数 [cx, cy, w, h, theta]
+        if len(ref_bboxes_3d.tensor) > 0:
+            # 改为使用过滤后的 ref_bboxes_3d
+            current_boxes = ref_bboxes_3d  
             
-            if 4 > i >= 1:
-                # print(f"[DEBUG] Visualizing segmentation for frame {i}")
-                self.visualize_segmentation(segmentation, save_path=f'segmentation_frame_{i}.png')
+            boxes_np = (
+                current_boxes.tensor.cpu().numpy()
+                
+            )
+          
+            # 转换 3D 框到 BEV 2D 框
+            bev_boxes = np.zeros((boxes_np.shape[0], 5), dtype=np.float32)
+            bev_boxes[:, 0] = (boxes_np[:, 0] - self.bev_start_position[0]) / self.bev_resolution[0]  # cx
+            bev_boxes[:, 1] = (boxes_np[:, 1] - self.bev_start_position[1]) / self.bev_resolution[1]  # cy
+            bev_boxes[:, 2] = boxes_np[:, 3] / self.bev_resolution[0]  # w
+            bev_boxes[:, 3] = boxes_np[:, 4] / self.bev_resolution[1]  # h
+            bev_boxes[:, 4] = boxes_np[:, 6]  # theta
+            # 1. 将 theta 从弧度转换为角度，并归一化到 [0, 360]
+            theta_deg = np.degrees(bev_boxes[:, 4]) % 360
+            bev_boxes[:, 4] = theta_deg
 
+            # 2. 归一化各列到 [0, 1]
+            #   - cx: 除以 BEV 图像宽度
+            #   - cy: 除以 BEV 图像高度
+            #   - w:  除以 BEV 图像宽度
+            #   - h:  除以 BEV 图像高度
+            #   - theta: 除以 360
+            bev_boxes[:, 0] = bev_boxes[:, 0] / self.bev_dimension[0]  # normalized cx
+            bev_boxes[:, 1] = bev_boxes[:, 1] / self.bev_dimension[1]  # normalized cy
+            bev_boxes[:, 2] = bev_boxes[:, 2] / self.bev_dimension[0]  # normalized width
+            bev_boxes[:, 3] = bev_boxes[:, 3] / self.bev_dimension[1]  # normalized height
+            bev_boxes[:, 4] = bev_boxes[:, 4] / 360.0   
+           
+            bbox_corners = ref_bboxes_3d.corners[:, [0, 3, 7, 4], :2].numpy()
+            bbox_corners = np.round(
+                (bbox_corners - self.bev_start_position[:2] + self.bev_resolution[:2] / 2.0)
+                / self.bev_resolution[:2]
+            ).astype(np.int32)
+            
+            for j, gt_ind in enumerate(ins_inds):
+                if gt_ind == self.ignore_index:
+                    gt_ind = SPECIAL_INDEX
+                poly_region = bbox_corners[j]
+                cv2.fillPoly(segmentation, [poly_region], 1)
+                cv2.fillPoly(instance, [poly_region], int(gt_ind))
             segmentations.append(segmentation)
             instances.append(instance)
 
-        # 将所有帧的 segmentation 和 instance 堆叠后转换为 tensor
-        segmentations = torch.from_numpy(np.stack(segmentations, axis=0)).long()
-        instances = torch.from_numpy(np.stack(instances, axis=0)).long()
-
-        instance_centerness, instance_offset, instance_flow, instance_backward_flow = self.center_offset_flow(
-            instances, all_gt_inds, ignore_index=self.ignore_index, sigma=3.0
-        )
-
-        invalid_mask = (segmentations[:, 0, 0] == self.ignore_index)
-        instance_centerness[invalid_mask] = self.ignore_index
-
-
-        # 添加当前帧的所有3d box参数文本格式
-        # 这里我们假设当前帧为 gt_future_boxes 列表中的第 0 帧
-        if len(gt_future_boxes) > 0:
-            current_boxes = gt_future_boxes[0]
-            # 如果 current_boxes 有 tensor 属性，则提取其中的数值，
-            # 这里假设 current_boxes.tensor 是一个 [N, 7] 的数组，表示每个 3d box 的参数
-            if hasattr(current_boxes, 'tensor'):
-                boxes_np = current_boxes.tensor.cpu().numpy() if isinstance(current_boxes.tensor, torch.Tensor) else current_boxes.tensor
-                # 格式化每个 box 的参数为一行，参数之间用逗号分隔，每个参数保留两位小数
-                boxes_text = "\n".join([", ".join([f"{val:.2f}" for val in box]) for box in boxes_np])
-            else:
-                boxes_text = str(current_boxes)
-        else:
-            boxes_text = "No 3d boxes available"
-        # 将生成的文本添加到 results 中，键名可自定义，比如 "3dbox_text"
-        results['3dbox_text'] = boxes_text
-
-        # 关键修改部分：
-        # 使用前摄像头对应的梯形掩码对生成的 occ 分割图（即 gt_occ_seg）进行处理，
-        # 将不在梯形内的区域置为 0（未占用）
-        results['filename'] = '1111.jpg'
-        segmentations = generate_all_ones(segmentations)
-        flip_segmentation = flip_segmentations(segmentations)
-        flip_masked_segmentation = self.apply_front_camera_mask(flip_segmentation)
-        
-        
-        
-        generateoccflowlabels_visualization(results, flip_segmentation, flip_masked_segmentation, segmentations)
-
-        
-        # 更新 results，注意这里暂时将 gt_segmentation 设置为处理后的 occ 分割图
-        results['gt_occ_has_invalid_frame'] = results.pop('occ_has_invalid_frame', None)
-        results['gt_occ_img_is_valid'] = results.pop('occ_img_is_valid', None)
+        gt_instances = build_gt_instances_from_bev_bbox(bev_boxes, 1)
+        # 更新 results，只保留 gt_2dbbox 信息
+        bev_boxes = torch.from_numpy(bev_boxes).to(current_boxes.tensor.device)
         results.update({
-            'gt_segmentation': flip_masked_segmentation,
-            'gt_instance': instances,
-            'gt_centerness': instance_centerness,
-            'gt_offset': instance_offset,
-            'gt_flow': instance_flow,
-            'gt_backward_flow': instance_backward_flow,
-            'gt_future_boxes': gt_future_boxes,
-            'gt_future_labels': gt_future_labels
+            'bev_bbox_gt': bev_boxes , # 新增 BEV 2D 框参数
+            'gt_instances': gt_instances
         })
+        
+        
+
+        
+        ###可视化
+        segmentations = torch.from_numpy(np.stack(segmentations, axis=0)).long()
+        # segmentations = generate_all_ones(segmentations)
+        flip_segmentation = flip_segmentations(segmentations)
+        flip_masked_segmentation = flip_segmentation
+        generateoccflowlabels_visualization(results, flip_segmentation, flip_masked_segmentation, segmentations)
+        # ----------------- 新增部分：可视化 gt_2dbbox -----------------
+        # 从 results['img_filename'] 中获取 CAM_FRONT 的图像文件名
+        cam_front_file = None
+        for fname in results.get('img_filename', []):
+            # 这里通过判断路径中是否含有 '/CAM_FRONT/' 和 '__CAM_FRONT__' 来确定前摄像头图像
+            if '/CAM_FRONT/' in fname and '__CAM_FRONT__' in fname:
+                cam_front_file = fname
+                break
+
+        if cam_front_file is not None and bev_boxes.numel() > 0:
+            name = results['save_name']
+            ext = results['ext']
+            new_name = name + 'occflow' + ext 
+            vis_save_path = os.path.join('/home/UNT/yz0370/projects/GiT/visualization/occ_2d_box', new_name)
+            # 调用可视化函数
+            visualize_gt_2dbbox(bev_boxes, self.bev_dimension, vis_save_path)
+        else:
+            print("未在 results['img_filename'] 中找到 CAM_FRONT 图像或无有效 2D 框信息。")
+        # --------------------------------------------------------------
+
         return results
 
 
+from mmengine.structures import InstanceData
+import torch
 
-    def center_offset_flow(self, instance_img, all_gt_inds, ignore_index=255, sigma=3.0):
-        """
-        根据 BEV 下的实例图计算目标中心热图、像素偏移、前向流（future displacement）以及后向流（backward flow）。
-
-        Args:
-            instance_img (torch.Tensor): 实例图，形状为 (seq_len, H, W)，其中每个像素的值为实例 id。
-            all_gt_inds (list): 长度为 seq_len 的列表，每个元素为当前帧目标实例 id 的数组（或 list）。
-            ignore_index (int): 忽略的标签值，默认 255。
-            sigma (float): 高斯扩散参数，用于计算中心热图，默认 3.0。
-
-        Returns:
-            tuple: (center_label, offset_label, future_displacement_label, backward_flow)
-                - center_label: torch.Tensor，形状为 (seq_len, 1, H, W)，表示目标中心处的高响应。
-                - offset_label: torch.Tensor，形状为 (seq_len, 2, H, W)，表示每个像素到目标中心的横纵向偏移。
-                - future_displacement_label: torch.Tensor，形状为 (seq_len, 2, H, W)，表示前一帧到当前帧目标中心的位移。
-                - backward_flow: torch.Tensor，形状为 (seq_len, 2, H, W)，表示当前帧到前一帧目标中心的位移（与 future_displacement 方向相反）。
-        """
-        seq_len, H, W = instance_img.shape
-        device = instance_img.device
-
-        # 初始化输出 tensor，注意这里所有值初始化为 ignore_index（或0）
-        center_label = torch.zeros(seq_len, 1, H, W, device=device)
-        offset_label = ignore_index * torch.ones(seq_len, 2, H, W, device=device, dtype=torch.float)
-        future_disp_label = ignore_index * torch.ones(seq_len, 2, H, W, device=device, dtype=torch.float)
-        backward_flow = ignore_index * torch.ones(seq_len, 2, H, W, device=device, dtype=torch.float)
-
-        # 生成坐标网格：x 表示行索引（垂直坐标），y 表示列索引（水平坐标）
-        x = torch.arange(H, dtype=torch.float, device=device).view(H, 1).expand(H, W)
-        y = torch.arange(W, dtype=torch.float, device=device).view(1, W).expand(H, W)
-
-        # 收集所有帧中出现的目标 id
-        all_ids = []
-        for inds in all_gt_inds:
-            if inds is not None:
-                # 若 inds 为 tensor，则转换为 list
-                if isinstance(inds, torch.Tensor):
-                    all_ids.extend(inds.tolist())
-                else:
-                    all_ids.extend(inds)
-        unique_ids = np.unique(np.array(all_ids))
-
-        # 对每个独立的实例 id 进行处理
-        for instance_id in unique_ids:
-            instance_id = int(instance_id)
-            prev_xc = None
-            prev_yc = None
-            prev_mask = None
-            for t in range(seq_len):
-                # 得到当前帧中该实例的掩码，形状 (H, W)
-                instance_mask = (instance_img[t] == instance_id)
-                if instance_mask.sum() == 0:
-                    # 当前帧中不存在该实例，则重置之前的中心信息
-                    prev_xc = None
-                    prev_yc = None
-                    prev_mask = None
-                    continue
-
-                # 计算当前帧中该实例在 BEV 图像下的中心（均值坐标）
-                xc = x[instance_mask].mean()
-                yc = y[instance_mask].mean()
-
-                # 计算偏移图：每个像素到目标中心的距离
-                off_x = xc - x
-                off_y = yc - y
-
-                # 计算高斯响应作为中心热图
-                g = torch.exp(-((off_x ** 2 + off_y ** 2) / (sigma ** 2)))
-                center_label[t, 0] = torch.maximum(center_label[t, 0], g)
-
-                # 对于属于该目标的像素，更新偏移值
-                offset_label[t, 0][instance_mask] = off_x[instance_mask]
-                offset_label[t, 1][instance_mask] = off_y[instance_mask]
-
-                # 若在上一帧中也存在该实例，则计算帧间位移
-                if prev_xc is not None and prev_mask is not None:
-                    delta_x = xc - prev_xc
-                    delta_y = yc - prev_yc
-                    # 将上一帧中该实例的像素，赋值为从上一帧到当前帧的位移
-                    future_disp_label[t - 1, 0][prev_mask] = delta_x
-                    future_disp_label[t - 1, 1][prev_mask] = delta_y
-                    # 后向流为负值
-                    backward_flow[t - 1, 0][instance_mask] = -delta_x
-                    backward_flow[t - 1, 1][instance_mask] = -delta_y
-
-                # 更新上一帧的中心信息
-                prev_xc = xc
-                prev_yc = yc
-                prev_mask = instance_mask
-
-        return center_label, offset_label, future_disp_label, backward_flow
-
-    def visualize_instances(self, instances, vis_root=''):
-        """
-        可视化生成的实例分割图，将每一帧的实例图保存为彩色图像，并合成视频便于查看调试。
-
-        Args:
-            instances (list or np.ndarray): 每个元素为一帧的实例分割图（二维 numpy 数组）。
-            vis_root (str): 保存可视化结果的目录路径。如果为空字符串，则不保存。
-        """
-        import os
-        import cv2
-
-        # 如果指定了保存目录，则创建目录
-        if vis_root is not None and vis_root != '':
-            os.makedirs(vis_root, exist_ok=True)
-
-        # 遍历每一帧，将实例图保存为彩色图像
-        for i, ins in enumerate(instances):
-            # 确保输入为 uint8 类型
-            ins_uint8 = ins.astype(np.uint8)
-            # 应用 COLORMAP_JET 颜色映射，将灰度图转换为彩色图
-            colored_ins = cv2.applyColorMap(ins_uint8, cv2.COLORMAP_JET)
-            save_path = os.path.join(vis_root, f'{i}.png')
-            cv2.imwrite(save_path, colored_ins)
-
-        # 合成视频：如果实例图非空，则将所有帧合成为视频保存
-        if len(instances) > 0:
-            # 假设所有帧尺寸相同，取第一帧的尺寸 (height, width)
-            height, width = instances[0].shape
-            video_path = os.path.join(vis_root, 'instances_video.avi')
-            # 注意：cv2.VideoWriter 需要视频尺寸格式为 (width, height)
-            fourcc = cv2.VideoWriter_fourcc(*'DIVX')
-            fps = 4  # 设定帧率，可根据需要调整
-            video_writer = cv2.VideoWriter(video_path, fourcc, fps, (width, height))
-            for ins in instances:
-                ins_uint8 = ins.astype(np.uint8)
-                colored_ins = cv2.applyColorMap(ins_uint8, cv2.COLORMAP_JET)
-                video_writer.write(colored_ins)
-            video_writer.release()
-
-
-    def __repr__(self):
-        return (f"{self.__class__.__name__}(grid_conf={self.grid_conf}, ignore_index={self.ignore_index}, "
-                f"only_vehicle={self.only_vehicle}, filter_invisible={self.filter_invisible}, "
-                f"deal_instance_255={self.deal_instance_255})")
+def build_gt_instances_from_bev_bbox(bev_bbox_gt: torch.Tensor, label: int) -> InstanceData:
+    """
+    Construct ground truth instances (gt_instances) from BEV occupancy bbox ground truth.
     
+    Args:
+        bev_bbox_gt (Tensor): A tensor of shape (N, 5) containing BEV occupancy bbox ground truth,
+                              where each bbox is represented as [cx, cy, w, h, theta] and values are normalized.
+        label (int): The class label for all bounding boxes (e.g., vehicle class id).
+        
+    Returns:
+        InstanceData: An object that contains at least:
+            - bboxes (Tensor): The original bev_bbox_gt tensor.
+            - labels (Tensor): A tensor of shape (N,) with all values set to the given label.
+    """
+     # 如果输入是 numpy 数组，先转换为 tensor
+    if isinstance(bev_bbox_gt, np.ndarray):
+        bev_bbox_gt = torch.from_numpy(bev_bbox_gt)
+    num_bboxes = bev_bbox_gt.size(0)
+    # 创建一个标签张量，所有 bbox 都属于同一类别
+    labels = torch.full((num_bboxes,), label, dtype=torch.long, device=bev_bbox_gt.device)
+    
+    # 构造 InstanceData 对象，包含 bboxes 和 labels
+    gt_instances = InstanceData(bboxes=bev_bbox_gt, labels=labels)
+    return gt_instances
 
-import os
+
 import cv2
 import numpy as np
-import matplotlib.pyplot as plt
-import torch
+
+def visualize_gt_2dbbox(gt_2dbbox, bev_dimension, save_path):
+    """
+    可视化归一化后的 gt_2dbbox，在 BEV 图像上绘制所有 2D 检测框，并保存到指定路径。
+    
+    参数:
+      gt_2dbbox: numpy 数组，形状为 [N, 5]，每一行为 [norm_cx, norm_cy, norm_w, norm_h, norm_theta]，
+                 其中归一化后的 norm_cx, norm_cy 分别为 BEV 图像中心的比例（0~1），
+                 norm_w, norm_h 为检测框宽高相对于 BEV 图像尺寸的比例，
+                 norm_theta 为检测框角度归一化后的值（对应 0~360 度）。
+      bev_dimension: (width, height) 表示 BEV 图像尺寸（像素）
+      save_path: 生成的可视化图像保存路径
+    """
+    width, height = bev_dimension[:2]
+    # 创建一张白色背景图像
+    bev_img = np.ones((height, width, 3), dtype=np.uint8) * 255
+
+    for box in gt_2dbbox:
+        norm_cx, norm_cy, norm_w, norm_h, norm_theta = box
+        # 反归一化到像素坐标
+        cx = norm_cx * width
+        cy = norm_cy * height
+        w  = norm_w * width
+        h  = norm_h * height
+        # 反归一化 theta: norm_theta * 360 得到角度，再转换为弧度
+        theta = np.deg2rad(norm_theta * 360)
+
+        # 计算半宽、半高
+        hw, hh = w / 2.0, h / 2.0
+        # 定义未旋转的角点（相对于中心）
+        corners = np.array([
+            [-hw, -hh],
+            [ hw, -hh],
+            [ hw,  hh],
+            [-hw,  hh]
+        ])
+        # 构造旋转矩阵（theta 为弧度）
+        cos_theta = np.cos(theta)
+        sin_theta = np.sin(theta)
+        R = np.array([
+            [cos_theta, -sin_theta],
+            [sin_theta,  cos_theta]
+        ])
+        # 旋转角点并平移到 BEV 图像坐标
+        rotated_corners = np.dot(corners, R.T)
+        corners_absolute = rotated_corners + np.array([cx, cy])
+        pts = corners_absolute.astype(np.int32).reshape((-1, 1, 2))
+        # 绘制红色边框，线宽设置为1
+        cv2.polylines(bev_img, [pts], isClosed=True, color=(0, 0, 255), thickness=1)
+        # 绘制蓝色中心点，半径设置为1
+        center_pt = (int(cx), int(cy))
+        cv2.circle(bev_img, center_pt, radius=1, color=(255, 0, 0), thickness=-1)
+
+    cv2.imwrite(save_path, bev_img)
+    # print(f"Visualization saved at {save_path}")
+
 
 def generateoccflowlabels_visualization(results, flip_segmentation, flip_masked_segmentation, segmentations):
     """
@@ -568,7 +463,15 @@ def generateoccflowlabels_visualization(results, flip_segmentation, flip_masked_
     save_path = os.path.join(save_dir, f"{name_without_ext}_generateoccflowlabels_visualization.png")
     plt.savefig(save_path)
     plt.close(fig)
-    print(f"Saved generateoccflowlabels_visualization to {save_path}")
+    # print(f"Saved generateoccflowlabels_visualization to {save_path}")
+
+
+
+import os
+import cv2
+import numpy as np
+import matplotlib.pyplot as plt
+import torch
 
 
 def generate_all_ones(segmentations):

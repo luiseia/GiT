@@ -1112,26 +1112,27 @@ class GeneralDataPreprocessor(ImgDataPreprocessor):
             sample0 = batch_data_samples[0]
             # print("[DEBUG] pad_gt_sem_seg: first element type:", type(sample0))
             if hasattr(sample0, 'keys'):
-                print("[DEBUG] pad_gt_sem_seg: first element keys:", list(sample0.keys()))
+                pass
+                # print("[DEBUG] pad_gt_sem_seg: first element keys:", list(sample0.keys()))
             else:
-                print("[DEBUG] pad_gt_sem_seg: first element attributes:", dir(sample0))
+                pass # print("[DEBUG] pad_gt_sem_seg: first element attributes:", dir(sample0))
         except Exception as e:
-            print("[DEBUG] pad_gt_sem_seg: Error accessing first element:", e)
+            pass# print("[DEBUG] pad_gt_sem_seg: Error accessing first element:", e)
 
         # 判断第一元素中是否包含 'gt_sem_seg'
         if isinstance(batch_data_samples, list) and len(batch_data_samples) > 0:
             if isinstance(batch_data_samples[0], dict):
                 if 'gt_sem_seg' in batch_data_samples[0]:
-                    print("[DEBUG] pad_gt_sem_seg: 'gt_sem_seg' found in first element (dict).")
+                    pass #print("[DEBUG] pad_gt_sem_seg: 'gt_sem_seg' found in first element (dict).")
                 else:
-                    print("[DEBUG] pad_gt_sem_seg: 'gt_sem_seg' NOT found in first element (dict).")
+                    pass #print("[DEBUG] pad_gt_sem_seg: 'gt_sem_seg' NOT found in first element (dict).")
             else:
                 if hasattr(batch_data_samples[0], 'gt_sem_seg'):
-                    print("[DEBUG] pad_gt_sem_seg: first element has attribute 'gt_sem_seg'.")
+                    pass #print("[DEBUG] pad_gt_sem_seg: first element has attribute 'gt_sem_seg'.")
                 else:
-                    print("[DEBUG] pad_gt_sem_seg: first element does not have attribute 'gt_sem_seg'.")
+                    pass #print("[DEBUG] pad_gt_sem_seg: first element does not have attribute 'gt_sem_seg'.")
         else:
-            print("[DEBUG] pad_gt_sem_seg: batch_data_samples is empty or not a list.")
+            pass #print("[DEBUG] pad_gt_sem_seg: batch_data_samples is empty or not a list.")
 
         # 原始逻辑：如果 'gt_sem_seg' 存在，则执行填充
         try:
@@ -1159,7 +1160,7 @@ class GeneralDataPreprocessor(ImgDataPreprocessor):
                     else:
                         data_samples.gt_sem_seg = PixelData(data=gt_sem_seg)
             else:
-                print("[DEBUG] pad_gt_sem_seg: 'gt_sem_seg' not found in first element; skipping padding.")
+                pass #print("[DEBUG] pad_gt_sem_seg: 'gt_sem_seg' not found in first element; skipping padding.")
         except Exception as e:
-            print("[DEBUG] pad_gt_sem_seg: Exception occurred during processing:", e)
+            pass #print("[DEBUG] pad_gt_sem_seg: Exception occurred during processing:", e)
             raise e

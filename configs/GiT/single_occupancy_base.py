@@ -13,14 +13,15 @@ custom_imports = dict(
         'mmdet.datasets.pipelines.load_annotations_3d_e2e',
         'mmdet.datasets.pipelines.generate_occ_flow_labels',
         'mmdet.models.dense_heads.git_occ_head',
-        # 新增：加载前摄像头图像的流水线模块
-        'mmdet.datasets.pipelines.load_front_camera_image',
+     
+        'mmdet.datasets.pipelines.load_all_camera_image',
         'mmdet.datasets.pipelines.resize_for_occ_input',
-       # 'mmdet.evaluation.metrics.occ_eval'
+        'mmdet.evaluation.metrics.occ_2d_box_eval'
     ],
     allow_failed_imports=False
 )
-
+base_img_size = 1120
+bev_wh_size = 200
 # ---------------------------
 # Occupancy（occ）相关配置
 # ---------------------------
@@ -35,11 +36,10 @@ occ_cfgs = dict(
     ignore_index=255,
     only_vehicle=True,
     occ_n_future=4,
-    # 以下参数与语义分割配置中保持一致
     grid_resolution_perwin=(1, 1),
     samples_grids_eachwin=1,
     grid_interpolate=False,
-    num_vocal=30524,
+    num_vocal=900 + 1,
     global_only_image=False,
     use_vocab_list=False
 )
@@ -48,8 +48,10 @@ occ_cfgs = dict(
 occ_head_cfg = dict(
     num_classes=2,
     grid_resolution_perwin=(1, 1),
-    grid_interpolate=False,
-    num_vocal=30524,
+    grid_interpolate=True,
+    
+    num_bins=200*2, # 离散化的 bin 数，这里假设BEV的宽和长各200
+    num_vocal=200*2+1,
     samples_grids_eachwin=32,
     global_only_image=True,
     use_vocab_list=False,
@@ -58,6 +60,7 @@ occ_head_cfg = dict(
 # ---------------------------
 # 模型配置
 # ---------------------------
+
 model = dict(
     type='GiT',
     support_tasks=['occupancy_prediction'],
@@ -68,12 +71,12 @@ model = dict(
         type='CustomOccDataPreprocessor',
         mean=[123.675, 116.28, 103.53],
         std=[58.395, 57.12, 57.375],
-        meta_keys=('occ_future_ann_infos', 'task_name', 'head_cfg', 'git_cfg',)  # occ head 需要的额外信息
+        meta_keys=('occ_future_ann_infos', 'task_name', 'head_cfg', 'git_cfg',)  # OCC head 需要的额外信息
     ),
     backbone=dict(
         type='ViTGiT',
         arch='base',
-        img_size=1120,
+        img_size=base_img_size,
         patch_size=16,
         out_channels=0,
         use_abs_pos=True,
@@ -86,16 +89,30 @@ model = dict(
         init_cfg=dict(type='Pretrained', checkpoint=pretrained, prefix='backbone.')
     ),
     head_list=dict(
-    occupancy_prediction_head=dict(
-        type='OccHead',
-        
-        num_classes=2,
-        ignore_index=255,
-        dec_length=20,
-        beam_num=2
+        occupancy_prediction_head=dict(
+            type='OccHead',
+            num_classes=2,
+            ignore_index=255,
+            dec_length=6,       # 解码步数（包括初始 token）
+            beam_num=2,
+            num_bins=900,      # 离散化的 bin 数，这里假设BEV的宽和长各200
+            num_vocal=901,       # 词汇表大小（num_bins + 1，用于回归 token 的离散表示）?好像用不到
+            num_queries=900,     # 候选 grid 数量（例如 30x30 均匀采样）
+            bev_shape=(200,200), # BEV 占用图尺寸
+            d_model=256,         # OCC head 内部 token 特征维度
+            nhead=8,             # 多头注意力头数
+            num_layers=6,        # Transformer 层数
+            train_cfg=dict(
+                assigner=dict(
+                    type='HungarianAssigner',
+                    match_costs=[dict(type='PointsL1Cost', weight=5.0, box_format='xywh')]
+                )
+            ),
+            test_cfg=dict(max_per_img=2)
+        )
     )
 )
-)
+
 
 # ---------------------------
 # 数据预处理流水线
@@ -108,7 +125,7 @@ train_pipeline = [
         ins_inds_add_1=False
     ),
     dict(
-        type='LoadFrontCameraImageFromFile',
+        type='LoadAllCameraImageFromFile',
         to_float32=True,
         color_type='color',
         img_root='data/nuscenes/images'
@@ -122,7 +139,7 @@ train_pipeline = [
         grid_conf=occ_cfgs['grid_conf'],
         ignore_index=occ_cfgs['ignore_index'],
         only_vehicle=occ_cfgs['only_vehicle'],
-        filter_invisible=True,
+        filter_invisible=False,
         deal_instance_255=False
     ),
     dict(
@@ -147,14 +164,14 @@ test_pipeline = [
         ins_inds_add_1=False
     ),
     dict(
-        type='LoadFrontCameraImageFromFile',
+        type='LoadAllCameraImageFromFile',
         to_float32=True,
         color_type='color',
         img_root='data/nuscenes/images'
     ),
     dict(
         type='ResizeForOccInput',
-        target_size=(224, 224)  # 这里设定宽度1568，高度896
+        target_size=(224, 224) 
     ),
     dict(
         type='GenerateOccFlowLabels',
@@ -224,7 +241,7 @@ test_dataloader = val_dataloader
 # 优化器、学习率调度等训练配置
 # ---------------------------
 max_iters = 200000
-train_cfg = dict(type='IterBasedTrainLoop', max_iters=max_iters, val_interval=5000)
+train_cfg = dict(type='IterBasedTrainLoop', max_iters=max_iters, val_interval=50)
 val_cfg = dict(type='ValLoop')
 test_cfg = dict(type='TestLoop')
 
@@ -239,7 +256,7 @@ optim_wrapper = dict(
 
 default_hooks = dict(
     timer=dict(type='IterTimerHook'),
-    logger=dict(type='LoggerHook', interval=50, log_metric_by_epoch=False),
+    logger=dict(type='LoggerHook', interval=5, log_metric_by_epoch=False),
     param_scheduler=dict(type='ParamSchedulerHook'),
     checkpoint=dict(type='CheckpointHook', by_epoch=False, interval=1000, max_keep_ckpts=3),
     sampler_seed=dict(type='DistSamplerSeedHook'),
@@ -251,5 +268,11 @@ log_processor = dict(type='LogProcessor', window_size=50, by_epoch=False)
 # ---------------------------
 # 评估配置
 # ---------------------------
-val_evaluator = dict(type='OCCEvaluator', ann_file='data/coco_2014/annotations/coco_karpathy_test_gt.json')
+val_evaluator = dict(
+    type='Occ2DBoxMetric',
+    iou_mode='rbox',
+    output_dir='work_dirs/occ_2d_eval/',
+    format_only=False,
+)
+
 test_evaluator = val_evaluator

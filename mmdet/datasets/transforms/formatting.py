@@ -561,22 +561,8 @@ class PackOccInputs(BaseTransform):
         import os
         data_sample.image_id = results['img_filename'][0].split('/')[-1]
 
-        if 'gt_segmentation' in results:
-            data_sample.gt_occ_seg = results['gt_segmentation']
-        if 'gt_instance' in results:
-            data_sample.gt_occ_instance = results['gt_instance']
-        if 'gt_centerness' in results:
-            data_sample.gt_occ_centerness = results['gt_centerness']
-        if 'gt_offset' in results:
-            data_sample.gt_occ_offset = results['gt_offset']
-        if 'gt_flow' in results:
-            data_sample.gt_occ_flow = results['gt_flow']
-        if 'gt_backward_flow' in results:
-            data_sample.gt_occ_backward_flow = results['gt_backward_flow']
-        if 'gt_future_boxes' in results:
-            data_sample.gt_future_boxes = results['gt_future_boxes']
-        if 'gt_future_labels' in results:
-            data_sample.gt_future_labels = results['gt_future_labels']
+        data_sample.bev_bbox_gt = results['bev_bbox_gt']
+        data_sample.gt_instances = results['gt_instances']
 
         
         # 收集 meta 信息

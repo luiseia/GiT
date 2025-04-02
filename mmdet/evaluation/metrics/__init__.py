@@ -16,8 +16,9 @@ from .visual_grounding_eval import VisualGroundingMetric
 from .openimages_inseg_metric import OpenImagesInSegMetric
 from .nocaps import NocapsSave
 from .kitti_metric import KittiMetric  # noqa
+from .occ_2d_box_eval import Occ2DBoxMetric
 
-__all__ = [
+__all__ = ['Occ2DBoxMetric',
     'CityScapesMetric', 'CocoMetric', 'CocoPanopticMetric', 'OpenImagesMetric',
     'VOCMetric', 'LVISMetric', 'CrowdHumanMetric', 'DumpProposals',
     'CocoOccludedSeparatedMetric', 'DumpDetResults', 'IoUMetric','COCOCaption','VisualGroundingMetric','OpenImagesInSegMetric','NocapsSave',
